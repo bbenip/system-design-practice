@@ -21,6 +21,18 @@ services:
       KAFKA_CREATE_TOPICS: "default-topic:1:1"
     networks:
       - kafka-net
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "8080:8080"
+  server:
+    build: ./server
+    container_name: server
+    ports:
+      - "8001:8001"
+    networks:
+      - kafka-net
 networks:
   kafka-net:
     driver: bridge
