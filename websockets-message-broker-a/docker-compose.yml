@@ -34,6 +34,7 @@ services:
       dockerfile: ./server/Dockerfile
     container_name: server
     depends_on:
+      - zookeeper
       - kafka
     ports:
       - "${SERVER_PORT}:8001"

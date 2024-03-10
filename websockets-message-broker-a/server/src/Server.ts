@@ -1,15 +1,24 @@
 import http from 'http';
 import { RawData, WebSocket, WebSocketServer } from 'ws';
 import { v4 as uuidv4 } from 'uuid';
-import { User, uuid } from './types';
-
-const DEFAULT_PORT = 8001;
+import { Message, User, uuid } from './types';
+import { KAFKA_PORT, KAFKA_TOPIC, SERVER_PORT } from './constants/environment';
+const { Kafka } = require('kafkajs');
 
 export class Server {
   private connections = new Map<string, WebSocket>();
   private users = new Map<string, User>();
+  private kafka = new Kafka({
+    clientId: 'server',
+    brokers: [`kafka:${KAFKA_PORT}`]
+  });
+  private producer;
+  private consumer;
 
-  constructor() {}
+  constructor() {
+    this.consumer = this.kafka.consumer({ groupId: KAFKA_TOPIC });
+    this.producer = this.kafka.producer();
+  }
 
   private getUserById = (userId: uuid) => {
     const user = this.users.get(userId);
@@ -28,42 +37,63 @@ export class Server {
     this.users.delete(userId);
   };
 
-  private handleMessage = (bytes: RawData, userId: uuid) => {
+  private handleMessage = async (bytes: RawData, userId: uuid) => {
     const messageString = bytes.toString();
-    const message = JSON.parse(messageString);
+    const { text }: Message = JSON.parse(messageString);
 
     const user = this.getUserById(userId);
 
     console.log(`user sent message: ${messageString}`);
-    this.sendMessage(userId);
+    await this.producer.send({
+      topic: KAFKA_TOPIC,
+      messages: [{ value: text }],
+    });
   };
 
-  private sendMessage = (userId: uuid) => {
-    const connection = this.getConnectionByUserId(userId)!;
-
-    connection.send(JSON.stringify({ text: 'Good morning' }));
-  };
-
-  private handleClose = (userId: uuid) => {
+  private handleClose = async (userId: uuid) => {
     console.log(`${userId} disconnected`);
 
     this.removeUserById(userId);
+    await this.producer.disconnect();
   };
 
-  public initializeServer = (port: number = DEFAULT_PORT) => {
+  private sendMessageToClient = (userId: uuid, message: string) => {
+    const connection = this.getConnectionByUserId(userId)!;
+
+    connection.send(JSON.stringify({ text: message }));
+  };
+
+  public initializeServer = (port: number = Number(SERVER_PORT)) => {
     const server = http.createServer();
 
     const websocketServer = new WebSocketServer({ server });
 
-    websocketServer.on('connection', connection => {
+    console.log('Connection to Kafka producer');
+    await this.producer.connect();
+
+    console.log('Connecting to Kafka consumer');
+    await this.consumer.connect();
+    
+    console.log('Subscribing to kafka topic');
+    await this.consumer.subscribe({ topic: KAFKA_TOPIC });
+    
+    websocketServer.on('connection', async (connection) => {
       const userId = uuidv4();
       console.log(`User: ${userId} connected`);
+      
+      await this.consumer.run({
+        eachMessage: async ({ topic, partition, message }: any) => {
+          console.log('Kafka message received:', message.value.toString());
+          await this.sendMessageToClient(userId, message.value.toString());
+        },
+      });
 
       this.connections.set(userId, connection);
       this.users.set(userId, { userId });
 
-      connection.on('message', message => this.handleMessage(message, userId));
-      connection.on('close', () => this.handleClose(userId));
+      connection.on('message', async (message) => await this.handleMessage(message, userId));
+      connection.on('close', async () => await this.handleClose(userId));
+
     });
 
     server.listen(port, () => {
