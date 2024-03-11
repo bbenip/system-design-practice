@@ -2,4 +2,4 @@ import { Server } from './server';
 
 const server = new Server();
 
-server.initializeServer();
+(async () => await server.initializeServer())();
